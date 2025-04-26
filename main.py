@@ -1,9 +1,13 @@
 import os
 import uuid
+import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, filters
-import httpx
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Импортируем токен из файла config.py
 from config import BOT_TOKEN
@@ -21,17 +25,20 @@ SELECT_ACTION, SELECT_NOTE, CREATE_NEW_NOTE = range(3)
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("Received /start command")
     await update.message.reply_text("Привет! Отправь мне новость (текст и/или изображение), и я добавлю её в заметки Obsidian. 😊")
     return SELECT_ACTION
 
 # Обработка текстового сообщения или изображения
 async def receive_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("Received news message")
     # Инициализируем данные новости
     news_data = {"text": "", "images": []}
     
     # Если есть текст
     if update.message.text:
         news_data["text"] = update.message.text
+        logger.info(f"Text received: {news_data['text']}")
     
     # Если есть изображения
     if update.message.photo:
@@ -42,14 +49,18 @@ async def receive_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         file_path = os.path.join(ATTACHMENTS_DIR, file_name)
         
         # Скачиваем изображение
+        logger.info(f"Downloading photo to {file_path}")
         photo_file = await photo.get_file()
         await photo_file.download_to_drive(file_path)
         
         # Добавляем ссылку на изображение в формате Markdown
-        news_data["images"].append(f"![Image {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}](attachments/{file_name})")
+        image_link = f"![Image {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}](attachments/{file_name})"
+        news_data["images"].append(image_link)
+        logger.info(f"Image link added: {image_link}")
 
     # Если нет ни текста, ни изображения
     if not news_data["text"] and not news_data["images"]:
+        logger.warning("No text or image received")
         await update.message.reply_text("Пожалуйста, отправь текст или изображение!")
         return SELECT_ACTION
 
@@ -70,6 +81,7 @@ async def receive_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def select_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    logger.info(f"Action selected: {query.data}")
 
     if query.data == 'new':
         await query.message.reply_text("Введите название новой заметки (без .md):")
@@ -78,6 +90,7 @@ async def select_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         # Получаем список существующих заметок
         notes = [f for f in os.listdir(OBSIDIAN_DIR) if f.endswith('.md')]
         if not notes:
+            logger.info("No existing notes found")
             await query.message.reply_text("Нет существующих заметок. Давай создадим новую!")
             await query.message.reply_text("Введите название новой заметки (без .md):")
             return CREATE_NEW_NOTE
@@ -94,9 +107,11 @@ async def create_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     note_name = update.message.text.strip() + ".md"
     news_data = context.user_data['news']
     note_path = os.path.join(OBSIDIAN_DIR, note_name)
+    logger.info(f"Creating new note: {note_name}")
 
     # Проверяем, существует ли заметка
     if os.path.exists(note_path):
+        logger.warning(f"Note {note_name} already exists")
         await update.message.reply_text("Заметка с таким названием уже существует! Попробуй другое название:")
         return CREATE_NEW_NOTE
 
@@ -110,6 +125,7 @@ async def create_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Создаём новую заметку
     with open(note_path, 'w', encoding='utf-8') as f:
         f.write(content)
+    logger.info(f"Note created at {note_path}")
     
     await update.message.reply_text(f"Новость добавлена в новую заметку: {note_name}")
     return ConversationHandler.END
@@ -118,10 +134,10 @@ async def create_new_note(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def select_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-
     note_name = query.data
     news_data = context.user_data['news']
     note_path = os.path.join(OBSIDIAN_DIR, note_name)
+    logger.info(f"Appending to existing note: {note_name}")
 
     # Собираем содержимое для добавления
     content = ""
@@ -133,25 +149,20 @@ async def select_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     # Добавляем новость в конец заметки
     with open(note_path, 'a', encoding='utf-8') as f:
         f.write(content)
+    logger.info(f"Content appended to {note_path}")
     
     await query.message.reply_text(f"Новость добавлена в заметку: {note_name}")
     return ConversationHandler.END
 
 # Команда /cancel для отмены
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("Cancel command received")
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
 def main() -> None:
-    # Настраиваем HTTP-клиент с увеличенным таймаутом и повторными попытками
-    http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0),  # Увеличиваем таймаут до 30 секунд
-        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        transport=httpx.AsyncHTTPTransport(retries=3)  # 3 попытки повторного подключения
-    )
-
-    # Создаём приложение с кастомным HTTP-клиентом
-    application = Application.builder().token(BOT_TOKEN).http_client(http_client).build()
+    # Создаём приложение с увеличенным таймаутом
+    application = Application.builder().token(BOT_TOKEN).read_timeout(30.0).write_timeout(30.0).connect_timeout(30.0).pool_timeout(30.0).build()
 
     # Настройка ConversationHandler
     conv_handler = ConversationHandler(
@@ -170,6 +181,7 @@ def main() -> None:
     application.add_handler(conv_handler)
 
     # Запуск бота
+    logger.info("Starting bot polling")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
