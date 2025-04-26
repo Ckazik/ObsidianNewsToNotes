@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, filters
+import httpx
 
 # Импортируем токен из файла config.py
 from config import BOT_TOKEN
@@ -142,8 +143,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main() -> None:
-    # Создаём приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Настраиваем HTTP-клиент с увеличенным таймаутом и повторными попытками
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0),  # Увеличиваем таймаут до 30 секунд
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        transport=httpx.AsyncHTTPTransport(retries=3)  # 3 попытки повторного подключения
+    )
+
+    # Создаём приложение с кастомным HTTP-клиентом
+    application = Application.builder().token(BOT_TOKEN).http_client(http_client).build()
 
     # Настройка ConversationHandler
     conv_handler = ConversationHandler(
